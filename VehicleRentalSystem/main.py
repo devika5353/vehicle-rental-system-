@@ -1131,3 +1131,11 @@ def get_pending_payments():
     connection.close()
 
     return pending_payments
+# ============================================================
+# SERVE FRONTEND
+# ============================================================
+from fastapi.staticfiles import StaticFiles
+
+frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
+if os.path.exists(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
