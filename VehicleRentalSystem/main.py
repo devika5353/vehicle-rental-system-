@@ -102,11 +102,21 @@ class PaymentTransaction(BaseModel):
 
 
 # ============================================================
-# ROOT
+# ROOT (SERVE FRONTEND HTML)
 # ============================================================
+from fastapi.responses import FileResponse
+
+frontend_path = os.path.join(os.path.dirname(__file__), "frontend")
 
 @app.get("/")
-def root():
+def serve_frontend():
+    index_file = os.path.join(frontend_path, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"message": "Vehicle Rental Management System API is running"}
+
+@app.get("/api-status")
+def api_status():
     return {
         "message": "Vehicle Rental Management System API is running"
     }
