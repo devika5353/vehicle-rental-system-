@@ -1,5 +1,5 @@
 fastapi
 uvicorn
 mysql-connector-python
-python-dotenvPyJWT==2.10.1
+python-dotenv
 PyJWT==2.10.1
