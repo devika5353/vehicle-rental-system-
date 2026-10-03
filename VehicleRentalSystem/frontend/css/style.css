@@ -574,3 +574,288 @@ tbody tr:last-child td { border-bottom:0; }
     .cp-user { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .cp * { transition: none !important; } }
+
+/* ============================================================
+   AUTH — login tabs + register card
+   ============================================================ */
+
+.auth-tabs { display: flex; gap: 4px; padding: 4px; margin: 10px 0 14px; background: #0f172a; border-radius: 8px; }
+.auth-tab { flex: 1; padding: 8px 0; border-radius: 6px; background: transparent; color: #94a3b8; font-size: .85rem; font-weight: 600; transition: background .2s, color .2s; }
+.auth-tab:hover { color: #f8fafc; }
+.auth-tab.active { background: #0b9b7a; color: #fff; }
+
+.auth-card { background: #1e293b; padding: 32px; border-radius: 12px; width: 320px; max-width: 92vw; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+.auth-card h2 { color: #f8fafc; margin-bottom: 4px; }
+.auth-sub { color: #94a3b8; margin-bottom: 18px; font-size: .85rem; }
+
+.auth-input { width: 100%; padding: 10px; margin-bottom: 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #f8fafc; box-sizing: border-box; font-size: .9rem; }
+.auth-input:focus { border-color: #0b9b7a; box-shadow: 0 0 0 3px rgba(11,155,122,.2); }
+.auth-input::placeholder { color: #64748b; }
+
+.auth-error { color: #f87171; margin-top: 10px; font-size: .85rem; }
+.auth-notice { color: #6ee7b7; margin-top: 10px; font-size: .85rem; }
+.auth-error:empty, .auth-notice:empty { display: none; }
+
+.auth-switch { margin-top: 14px; text-align: center; color: #94a3b8; font-size: .85rem; }
+.auth-link { background: transparent; color: #6ee7b7; font-weight: 600; font-size: inherit; text-decoration: underline; padding: 0; }
+.auth-link:hover { color: #a7f3d0; }
+/* ============================================================
+   RENTAL RETURN — "Return Vehicle" action + return status
+   Matches the existing admin action buttons and badges.
+   ============================================================ */
+
+.action-buttons { align-items: center; }
+
+.return-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 29px;
+    padding: 0 11px;
+    border-radius: 8px;
+    border: 1px solid #ccebdd;
+    background: #ebf7f1;
+    color: #0d694d;
+    font-size: 9px;
+    font-weight: 700;
+    white-space: nowrap;
+    transition: var(--transition);
+}
+
+.return-button i { font-size: 9px; }
+
+.return-button:hover {
+    background: #d7f3e4;
+    border-color: #a8e2c4;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 14px rgba(11, 155, 122, .14);
+}
+
+.return-button:active { transform: translateY(0); }
+
+.return-button:focus-visible {
+    outline: 2px solid var(--emerald);
+    outline-offset: 2px;
+}
+
+.return-button:disabled {
+    opacity: .55;
+    cursor: wait;
+    transform: none;
+    box-shadow: none;
+}
+
+/* Shown in the "Actual Return" column until the vehicle is returned */
+.not-returned {
+    color: #a1a2a4;
+    font-style: italic;
+}
+/* ============================================================
+   LOCATION SELECTOR
+   Pickup / drop-off location fields and the picker modal on the
+   customer booking page. Uses the existing cp-* palette.
+   ============================================================ */
+
+.cp-loc-trigger {
+    width: 100%;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid #cfc5b6;
+    background: #fff;
+    color: var(--cp-ink);
+    font-size: 14px;
+    font-weight: 500;
+    text-align: left;
+    transition: border-color .2s, box-shadow .2s;
+}
+.cp-loc-trigger:hover { border-color: var(--cp-green); }
+.cp-loc-trigger:focus-visible { outline: 2px solid var(--cp-gold); outline-offset: 2px; }
+.cp-loc-trigger > i:first-child { color: var(--cp-green); }
+.cp-loc-trigger > span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cp-loc-placeholder { color: #8a8f9b; }
+.cp-loc-chevron { font-size: 11px; color: var(--cp-muted); }
+
+/* Picker modal */
+.cp-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(10, 20, 34, .55);
+    backdrop-filter: blur(6px);
+}
+.cp-modal {
+    width: min(480px, 100%);
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    background: #fffdf9;
+    border: 1px solid #e2d9cc;
+    border-radius: 18px;
+    box-shadow: 0 30px 80px rgba(15, 31, 52, .25);
+    overflow: hidden;
+    color: #172238;
+    font-family: "DM Sans", Inter, system-ui, sans-serif;
+}
+.cp-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px;
+    border-bottom: 1px solid #eee7df;
+}
+.cp-modal-head h3 { font-size: 18px; }
+.cp-modal-close {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: #f2eee8;
+    color: #717782;
+    font-size: 20px;
+}
+.cp-modal-close:hover { background: #e9e1d7; color: #172238; }
+
+/* Location cards */
+.cp-loc-list {
+    overflow-y: auto;
+    padding: 12px;
+    display: grid;
+    gap: 8px;
+}
+.cp-loc-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    border-radius: 12px;
+    border: 2px solid #e2d9cc;
+    background: #fff;
+    color: #172238;
+    text-align: left;
+    font-size: 14px;
+    font-weight: 500;
+    transition: border-color .2s, background .2s;
+}
+.cp-loc-item > i:first-child { color: #c99a4a; }
+.cp-loc-item > span { flex: 1; }
+.cp-loc-item:hover { border-color: #0b9b7a; }
+.cp-loc-item.selected { border-color: #0b9b7a; background: #eef9f5; }
+.cp-loc-item.selected > i:first-child { color: #0b9b7a; }
+.cp-loc-check { color: #0b9b7a; }
+
+/* "Other Location" free-text box */
+.cp-loc-other {
+    padding: 0 12px 14px;
+    display: grid;
+    gap: 10px;
+}
+.cp-loc-other[hidden] { display: none; }
+.cp-loc-input {
+    width: 100%;
+    padding: 11px 12px;
+    border-radius: 10px;
+    border: 1px solid #cfc5b6;
+    background: #fff;
+    color: #172238;
+    font-size: 14px;
+    min-height: 44px;
+    outline: 0;
+}
+.cp-loc-input:focus {
+    border-color: #0b9b7a;
+    box-shadow: 0 0 0 3px rgba(11, 155, 122, .16);
+}
+
+/* Results card stays hidden until a search has run */
+#cpResultsCard[hidden] { display: none; }
+
+/* Long location names wrap in the price summary */
+.cp-lines dd { word-break: break-word; }
+/* ============================================================
+   FLEET AVAILABILITY SUMMARY (admin > Vehicles)
+   ============================================================ */
+
+.fleet-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 14px;
+    padding: 0 0 18px;
+}
+
+.fleet-sum-card {
+    background: rgba(255, 253, 249, .9);
+    border: 1px solid rgba(226, 216, 204, .88);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    padding: 15px 16px;
+    transition: var(--transition);
+}
+
+.fleet-sum-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow);
+}
+
+.fleet-sum-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.fleet-sum-head strong {
+    font-size: 13px;
+    color: #303949;
+}
+
+.fleet-sum-icon {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 9px;
+    background: #ebf7f1;
+    color: var(--emerald-dark);
+    font-size: 12px;
+}
+
+.fleet-sum-lines > div {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px dashed #eee7df;
+    font-size: 10px;
+    color: #6f7680;
+}
+
+.fleet-sum-lines > div:last-child { border-bottom: 0; }
+
+.fleet-sum-lines dd {
+    font-weight: 700;
+    font-size: 11px;
+    color: #313a4a;
+}
+
+.fleet-sum-lines .fleet-sum-ok { color: #14765c; }
+.fleet-sum-lines .fleet-sum-out { color: #a43f3c; }
+
+.fleet-sum-empty {
+    grid-column: 1 / -1;
+    padding: 20px;
+    text-align: center;
+    color: #9b9d9f;
+    font-size: 10px;
+}

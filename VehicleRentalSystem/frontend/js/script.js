@@ -8,7 +8,8 @@ let appData = {
     rentals: [],
     payments: [],
     transactions: [],
-    pendingPayments: []
+    pendingPayments: [],
+    fleetSummary: []
 };
 
 let editingId = null;
@@ -22,7 +23,7 @@ let currentUser = null;
 document.addEventListener("DOMContentLoaded", async () => {
 
     setupLogin();
-
+    setupRegister();
     const savedUser = localStorage.getItem("user");
 
     if (savedUser) {
@@ -101,6 +102,145 @@ function setupLogin() {
             localStorage.removeItem("user");
             window.location.reload();
         }
+    );
+}
+
+
+/* =========================================================
+   REGISTER (customer self-registration)
+   Only offered on the Customer tab. The server always creates
+   the account with the "customer" role, so this form can never
+   create an admin.
+========================================================= */
+
+function setupRegister() {
+
+    const loginForm = document.getElementById("loginForm");
+    const registerForm = document.getElementById("registerForm");
+
+    if (!loginForm || !registerForm) {
+        return;
+    }
+
+    const tabCustomer = document.getElementById("tabCustomer");
+    const tabAdmin = document.getElementById("tabAdmin");
+    const subtitle = document.getElementById("loginSubtitle");
+    const registerPrompt = document.getElementById("registerPrompt");
+    const loginError = document.getElementById("loginError");
+    const loginNotice = document.getElementById("loginNotice");
+
+    function setMode(mode) {
+
+        const isCustomer = mode !== "admin";
+
+        tabCustomer.classList.toggle("active", isCustomer);
+        tabAdmin.classList.toggle("active", !isCustomer);
+        tabCustomer.setAttribute("aria-selected", String(isCustomer));
+        tabAdmin.setAttribute("aria-selected", String(!isCustomer));
+
+        subtitle.textContent =
+            isCustomer ? "Customer sign in" : "Admin sign in";
+
+        // Admins can't register, so the link is hidden on the Admin tab.
+        registerPrompt.style.display = isCustomer ? "" : "none";
+
+        loginError.textContent = "";
+        loginNotice.textContent = "";
+
+        try {
+            localStorage.setItem(
+                "loginMode",
+                isCustomer ? "customer" : "admin"
+            );
+        } catch {
+            // storage unavailable; the tab just won't be remembered
+        }
+    }
+
+    function showRegister() {
+        loginForm.style.display = "none";
+        registerForm.style.display = "";
+        document.getElementById("registerName")?.focus();
+    }
+
+    function showLogin() {
+        registerForm.style.display = "none";
+        loginForm.style.display = "";
+    }
+
+    tabCustomer.addEventListener("click", () => setMode("customer"));
+    tabAdmin.addEventListener("click", () => setMode("admin"));
+
+    document.getElementById("showRegisterBtn")
+        ?.addEventListener("click", showRegister);
+
+    document.getElementById("showLoginBtn")
+        ?.addEventListener("click", showLogin);
+
+    loginForm.addEventListener("input", () => {
+        loginNotice.textContent = "";
+    });
+
+    registerForm.addEventListener("submit", async (event) => {
+
+        event.preventDefault();
+
+        const errorEl = document.getElementById("registerError");
+        const submitBtn = document.getElementById("registerSubmitBtn");
+
+        errorEl.textContent = "";
+
+        const name = document.getElementById("registerName").value.trim();
+        const email = document.getElementById("registerEmail").value.trim().toLowerCase();
+        const phone = document.getElementById("registerPhone").value.trim();
+        const password = document.getElementById("registerPassword").value;
+        const confirm = document.getElementById("registerConfirm").value;
+
+        if (password.length < 6) {
+            errorEl.textContent = "Password must be at least 6 characters.";
+            return;
+        }
+
+        if (password !== confirm) {
+            errorEl.textContent = "Passwords don't match.";
+            return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Creating account…";
+
+        try {
+
+            await api("/register", {
+                method: "POST",
+                body: JSON.stringify({ name, email, phone, password })
+            });
+
+            registerForm.reset();
+            showLogin();
+            setMode("customer");
+
+            document.getElementById("loginEmail").value = email;
+            document.getElementById("loginPassword").value = "";
+            loginNotice.textContent = "Account created. Please sign in.";
+            document.getElementById("loginPassword").focus();
+
+        } catch (error) {
+
+            errorEl.textContent =
+                error.message || "Unable to create account.";
+
+        } finally {
+
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Create account";
+        }
+    });
+
+    setMode(
+        localStorage.getItem("loginMode") === "admin"
+            ? "admin"
+            : "customer"
     );
 }
 
@@ -191,11 +331,10 @@ async function showApp() {
 
     await loadData();
 }
-
-
 /* =========================================================
    CUSTOMER BOOKING PAGE (DrivePrime)
-   One page: Vehicle -> Dates & times -> Extras -> Price -> Payment.
+   Flow: Plan your ride (locations + dates + times) -> Search
+   available vehicles -> Choose vehicle -> Price -> Payment.
    The backend re-validates and re-prices everything on submit.
 ========================================================= */
 
@@ -208,9 +347,20 @@ let customerVehicles = [];
 let customerLastBooking = null;
 let customerTimeSlots = [];
 
+// Location list comes from the backend (GET /customer/booking-config),
+// so it is defined in one place only. Shape per item:
+// { id, name, latitude, longitude }  (lat/lng reserved for a future map)
+let customerLocations = [];
+
+// True once "Search Available Vehicles" has returned results for the
+// CURRENT inputs. Any change to locations/dates/times resets it.
+let customerHasSearched = false;
+
 const customerState = {
     vehicle: null,
     type: "",
+    pickupLocation: "",
+    dropoffLocation: "",
     startDate: "",
     endDate: "",
     pickupTime: "",
@@ -266,23 +416,52 @@ function customerFormatTime(value) {
 
 
 function customerInr(value) {
-    return "₹" + Number(value || 0).toLocaleString("en-IN");
+    const n = Number(value || 0);
+    return "₹" + n.toLocaleString("en-IN", {
+        minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+        maximumFractionDigits: 2
+    });
 }
 
 
-function customerRentalDays() {
+// Hour-based duration from the booked pickup/drop-off date + time.
+function customerRentalHours() {
 
-    const { startDate, endDate } = customerState;
+    const { startDate, endDate, pickupTime, dropoffTime } = customerState;
 
-    if (!startDate || !endDate || endDate < startDate) {
+    if (!startDate || !endDate || !pickupTime || !dropoffTime) {
         return 0;
     }
 
-    const days = Math.round(
-        (new Date(endDate) - new Date(startDate)) / 86400000
-    );
+    const ms =
+        new Date(`${endDate}T${dropoffTime}:00`) -
+        new Date(`${startDate}T${pickupTime}:00`);
 
-    return days > 0 ? days : 1;
+    return ms > 0 ? Math.round(ms / 60000) / 60 : 0;
+}
+
+
+// rental_amount = hours x (rate_per_day / 24), rounded to 2 decimals.
+function customerRentalAmount(ratePerDay, hours) {
+
+    const minutes = Math.round(hours * 60);
+
+    return Math.round((Number(ratePerDay) * minutes / 1440) * 100) / 100;
+}
+
+
+function formatHours(h) {
+
+    if (h === null || h === undefined || h === "" || isNaN(Number(h))) {
+        return "—";
+    }
+
+    const n = Number(h);
+    const text = Number.isInteger(n)
+        ? String(n)
+        : n.toFixed(2).replace(/\.?0+$/, "");
+
+    return `${text} ${n === 1 ? "hr" : "hrs"}`;
 }
 
 
@@ -357,7 +536,7 @@ function customerSetActiveNav(id) {
 }
 
 
-/* ---------- Booking page ---------- */
+/* ---------- Booking page: Plan Your Ride -> Search -> Available Vehicles ---------- */
 
 async function customerShowBookingPage() {
 
@@ -367,8 +546,9 @@ async function customerShowBookingPage() {
 
     customerSetActiveNav("custNavVehicles");
 
-    // Business hours: use the server's definition so both sides agree.
-    if (!customerTimeSlots.length) {
+    // Business hours + locations: use the server's definitions so both
+    // sides agree.
+    if (!customerTimeSlots.length || !customerLocations.length) {
 
         let cfg = DEFAULT_BUSINESS_HOURS;
 
@@ -379,6 +559,7 @@ async function customerShowBookingPage() {
         }
 
         customerTimeSlots = buildTimeSlots(cfg);
+        customerLocations = Array.isArray(cfg.locations) ? cfg.locations : [];
     }
 
     const timeOptions = customerTimeSlots
@@ -389,39 +570,33 @@ async function customerShowBookingPage() {
 
     main.innerHTML = `
         <ol class="cp-steps" id="cpSteps">
-            <li data-step="1">Choose vehicle</li>
-            <li data-step="2">Dates &amp; times</li>
-            <li data-step="3">Extras</li>
-            <li data-step="4">Review price</li>
-            <li data-step="5">Payment</li>
+            <li>Plan your ride</li>
+            <li>Search</li>
+            <li>Choose vehicle</li>
+            <li>Review price</li>
+            <li>Payment</li>
         </ol>
 
         <div class="cp-layout">
             <div class="cp-col-main">
 
-                <section class="cp-card" aria-labelledby="cpVehiclesTitle">
-                    <div class="cp-card-head">
-                        <h2 id="cpVehiclesTitle">Choose your vehicle</h2>
-                        <div class="cp-chips" id="cpTypeChips" role="group" aria-label="Filter by vehicle type"></div>
-                    </div>
-                    <div id="cpVehicleGrid" class="cp-vehicle-grid">
-                        <p class="cp-muted">Loading vehicles…</p>
-                    </div>
-                </section>
-
-                <section class="cp-card" aria-labelledby="cpDetailsTitle">
-                    <h2 id="cpDetailsTitle">Rental details</h2>
+                <section class="cp-card" aria-labelledby="cpPlanTitle">
+                    <h2 id="cpPlanTitle">Plan Your Ride</h2>
 
                     <div class="cp-grid-2">
                         <fieldset class="cp-fieldset">
                             <legend>Pickup</legend>
-                            <div class="cp-row">
+                            <div class="cp-field">
+                                <span>Pickup Location</span>
+                                <button type="button" id="cpPickupLocation" class="cp-loc-trigger"></button>
+                            </div>
+                            <div class="cp-row" style="margin-top:12px;">
                                 <label class="cp-field">
-                                    <span>Date</span>
+                                    <span>Pickup Date</span>
                                     <input type="date" id="cpStartDate" min="${todayValue}">
                                 </label>
                                 <label class="cp-field">
-                                    <span>Time</span>
+                                    <span>Pickup Time</span>
                                     <select id="cpPickupTime" class="cp-select">
                                         <option value="">Select time</option>${timeOptions}
                                     </select>
@@ -431,13 +606,17 @@ async function customerShowBookingPage() {
 
                         <fieldset class="cp-fieldset">
                             <legend>Drop-off</legend>
-                            <div class="cp-row">
+                            <div class="cp-field">
+                                <span>Drop-off Location</span>
+                                <button type="button" id="cpDropoffLocation" class="cp-loc-trigger"></button>
+                            </div>
+                            <div class="cp-row" style="margin-top:12px;">
                                 <label class="cp-field">
-                                    <span>Date</span>
+                                    <span>Drop-off Date</span>
                                     <input type="date" id="cpEndDate" min="${todayValue}">
                                 </label>
                                 <label class="cp-field">
-                                    <span>Time</span>
+                                    <span>Drop-off Time</span>
                                     <select id="cpDropoffTime" class="cp-select">
                                         <option value="">Select time</option>${timeOptions}
                                     </select>
@@ -453,6 +632,19 @@ async function customerShowBookingPage() {
                             <small>Adds a rider seat, ${customerInr(PILLION_ADDON_FEE)} flat</small>
                         </span>
                     </label>
+
+                    <p id="cpSearchError" class="cp-error" role="alert" style="margin-top:14px;"></p>
+                    <button id="cpSearchBtn" class="cp-cta" type="button" style="margin-top:14px;">
+                        Search Available Vehicles
+                    </button>
+                </section>
+
+                <section class="cp-card" id="cpResultsCard" aria-labelledby="cpVehiclesTitle" hidden>
+                    <div class="cp-card-head">
+                        <h2 id="cpVehiclesTitle">Available Vehicles</h2>
+                        <div class="cp-chips" id="cpTypeChips" role="group" aria-label="Filter by vehicle type"></div>
+                    </div>
+                    <div id="cpVehicleGrid" class="cp-vehicle-grid"></div>
                 </section>
             </div>
 
@@ -462,7 +654,9 @@ async function customerShowBookingPage() {
                     <div id="cpSelected" class="cp-selected">No vehicle selected</div>
 
                     <dl class="cp-lines">
-                        <div><dt>Rental days</dt><dd id="cpSumDays">—</dd></div>
+                        <div><dt>Pickup</dt><dd id="cpSumPickup">—</dd></div>
+                        <div><dt>Drop-off</dt><dd id="cpSumDropoff">—</dd></div>
+                        <div><dt>Rental duration</dt><dd id="cpSumHours">—</dd></div>
                         <div><dt>Vehicle rental</dt><dd id="cpSumRental">₹0</dd></div>
                         <div><dt>Pillion add-on</dt><dd id="cpSumPillion">₹0</dd></div>
                         <div class="cp-total"><dt>Total</dt><dd id="cpSumTotal">₹0</dd></div>
@@ -488,12 +682,17 @@ async function customerShowBookingPage() {
 
     const $ = id => document.getElementById(id);
 
+    // Restore state (e.g. after visiting My Bookings and coming back).
     $("cpStartDate").value = customerState.startDate;
     $("cpEndDate").value = customerState.endDate;
     $("cpPickupTime").value = customerState.pickupTime;
     $("cpDropoffTime").value = customerState.dropoffTime;
     $("cpPillion").checked = customerState.pillion;
     $("cpPaymentMode").value = customerState.paymentMode;
+    customerRenderLocationTriggers();
+
+    $("cpPickupLocation").addEventListener("click", () => customerOpenLocationPicker("pickup"));
+    $("cpDropoffLocation").addEventListener("click", () => customerOpenLocationPicker("dropoff"));
 
     $("cpStartDate").addEventListener("change", () => {
         customerState.startDate = $("cpStartDate").value;
@@ -517,14 +716,16 @@ async function customerShowBookingPage() {
 
     $("cpPickupTime").addEventListener("change", () => {
         customerState.pickupTime = $("cpPickupTime").value;
-        customerOnScheduleChange(false);
+        customerOnScheduleChange();
     });
 
     $("cpDropoffTime").addEventListener("change", () => {
         customerState.dropoffTime = $("cpDropoffTime").value;
-        customerOnScheduleChange(false);
+        customerOnScheduleChange();
     });
 
+    // The pillion add-on doesn't affect availability, so it only
+    // refreshes the price summary (no re-search needed).
     $("cpPillion").addEventListener("change", () => {
         customerState.pillion = $("cpPillion").checked;
         customerUpdateSummary();
@@ -532,20 +733,164 @@ async function customerShowBookingPage() {
 
     $("cpPaymentMode").addEventListener("change", () => {
         customerState.paymentMode = $("cpPaymentMode").value;
-        customerUpdateSummary();
     });
 
+    $("cpSearchBtn").addEventListener("click", customerSearchVehicles);
     $("cpConfirmBtn").addEventListener("click", customerConfirmBooking);
 
-    if (customerState.endDate === "" && customerState.startDate) {
+    if (customerState.startDate) {
         $("cpEndDate").min = customerState.startDate;
     }
 
     customerRefreshDropoffTimes();
+
+    // Re-show previous search results if the customer navigated away
+    // and came back without changing anything.
+    if (customerHasSearched) {
+        $("cpResultsCard").hidden = false;
+        customerRenderTypeChips();
+        customerRenderVehicleCards();
+    }
+
     customerUpdateSummary();
-    customerLoadVehicles();
 }
 
+
+/* ---------- Locations ---------- */
+
+function customerIsOtherLocation(value) {
+    return String(value || "").startsWith("Other Location");
+}
+
+
+function customerRenderLocationTriggers() {
+
+    [
+        ["cpPickupLocation", customerState.pickupLocation, "Select pickup location"],
+        ["cpDropoffLocation", customerState.dropoffLocation, "Select drop-off location"]
+    ].forEach(([id, value, placeholder]) => {
+
+        const el = document.getElementById(id);
+
+        if (!el) { return; }
+
+        el.innerHTML = `
+            <i class="fa-solid fa-location-dot" aria-hidden="true"></i>
+            <span class="${value ? "" : "cp-loc-placeholder"}">${escapeHTML(value || placeholder)}</span>
+            <i class="fa-solid fa-chevron-down cp-loc-chevron" aria-hidden="true"></i>
+        `;
+    });
+}
+
+
+function customerSetLocation(which, value) {
+
+    customerState[which === "pickup" ? "pickupLocation" : "dropoffLocation"] = value;
+
+    customerRenderLocationTriggers();
+    customerInvalidateSearch();
+}
+
+
+function customerOpenLocationPicker(which) {
+
+    const key = which === "pickup" ? "pickupLocation" : "dropoffLocation";
+    const title = which === "pickup" ? "Select Pickup Location" : "Select Drop-off Location";
+    const current = customerState[key];
+
+    const overlay = document.createElement("div");
+    overlay.className = "cp-modal-overlay";
+
+    overlay.innerHTML = `
+        <div class="cp-modal" role="dialog" aria-modal="true" aria-label="${title}">
+            <div class="cp-modal-head">
+                <h3>${title}</h3>
+                <button type="button" class="cp-modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="cp-loc-list"></div>
+            <div class="cp-loc-other" hidden>
+                <input type="text" class="cp-loc-input" maxlength="120"
+                       placeholder="Enter pickup/drop-off address" aria-label="Custom location">
+                <button type="button" class="cp-cta cp-loc-use">Use this location</button>
+            </div>
+        </div>
+    `;
+
+    const onKey = e => { if (e.key === "Escape") { close(); } };
+
+    function close() {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey);
+    }
+
+    document.addEventListener("keydown", onKey);
+
+    overlay.addEventListener("click", e => {
+        if (e.target === overlay) { close(); }
+    });
+
+    overlay.querySelector(".cp-modal-close").addEventListener("click", close);
+
+    const list = overlay.querySelector(".cp-loc-list");
+    const otherBox = overlay.querySelector(".cp-loc-other");
+    const otherInput = overlay.querySelector(".cp-loc-input");
+
+    customerLocations.forEach(loc => {
+
+        const selected =
+            loc.name === current ||
+            (loc.name === "Other Location" && customerIsOtherLocation(current));
+
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "cp-loc-item" + (selected ? " selected" : "");
+        btn.setAttribute("aria-pressed", String(selected));
+
+        btn.innerHTML = `
+            <i class="fa-solid fa-location-dot" aria-hidden="true"></i>
+            <span>${escapeHTML(loc.name)}</span>
+            ${selected ? '<i class="fa-solid fa-circle-check cp-loc-check" aria-hidden="true"></i>' : ""}
+        `;
+
+        btn.addEventListener("click", () => {
+
+            // "Other Location" asks for a short address first.
+            if (loc.name === "Other Location") {
+                otherBox.hidden = false;
+                otherInput.focus();
+                return;
+            }
+
+            customerSetLocation(which, loc.name);
+            close();
+        });
+
+        list.appendChild(btn);
+    });
+
+    if (customerIsOtherLocation(current)) {
+        otherInput.value = current.replace(/^Other Location:?\s*/, "");
+        otherBox.hidden = false;
+    }
+
+    overlay.querySelector(".cp-loc-use").addEventListener("click", () => {
+
+        const text = otherInput.value.trim();
+
+        if (!text) {
+            otherInput.focus();
+            return;
+        }
+
+        customerSetLocation(which, `Other Location: ${text}`);
+        close();
+    });
+
+    document.body.appendChild(overlay);
+}
+
+
+/* ---------- Schedule change / search ---------- */
 
 // Same-day rentals: drop-off must be later than pickup.
 function customerRefreshDropoffTimes() {
@@ -571,62 +916,125 @@ function customerRefreshDropoffTimes() {
 }
 
 
-function customerOnScheduleChange(refetch = true) {
+// Any change to locations/dates/times makes earlier results stale:
+// hide them and clear the chosen vehicle so the customer searches again.
+function customerInvalidateSearch() {
 
-    customerRefreshDropoffTimes();
+    customerHasSearched = false;
+    customerVehicles = [];
+    customerState.vehicle = null;
+
+    const card = document.getElementById("cpResultsCard");
+
+    if (card) { card.hidden = true; }
+
     customerUpdateSummary();
-
-    if (refetch && customerState.startDate && customerState.endDate) {
-        customerLoadVehicles();
-    }
 }
 
 
-async function customerLoadVehicles() {
+function customerOnScheduleChange() {
 
-    const grid = document.getElementById("cpVehicleGrid");
+    customerRefreshDropoffTimes();
+    customerInvalidateSearch();
+}
 
-    if (!grid) { return; }
 
-    const { startDate, endDate } = customerState;
+function customerValidateSchedule() {
 
-    const query =
-        startDate && endDate && endDate >= startDate
-            ? `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`
-            : "";
+    const s = customerState;
 
-    try {
-        customerVehicles = await api(`/customer/vehicles${query}`);
-    } catch (error) {
-        grid.innerHTML =
-            `<p class="cp-error">${escapeHTML(error.message || "Unable to load vehicles.")}</p>`;
+    if (!s.pickupLocation) { return "Select a pickup location."; }
+
+    if (!s.startDate || !s.pickupTime) { return "Select a pickup date and time."; }
+
+    if (!s.dropoffLocation) { return "Select a drop-off location."; }
+
+    if (!s.endDate || !s.dropoffTime) { return "Select a drop-off date and time."; }
+
+    if (s.startDate < today()) { return "Pickup date can't be in the past."; }
+
+    if (s.endDate < s.startDate) { return "Drop-off date can't be before pickup date."; }
+
+    if (!customerTimeSlots.includes(s.pickupTime) || !customerTimeSlots.includes(s.dropoffTime)) {
+        return "Pickup and drop-off times must be on the half hour.";
+    }
+
+    if (s.startDate === s.endDate && s.dropoffTime <= s.pickupTime) {
+        return "Drop-off time must be later than pickup time on the same day.";
+    }
+
+    if (!customerRentalHours()) { return "Drop-off must be later than pickup."; }
+
+    return "";
+}
+
+
+async function customerSearchVehicles() {
+
+    const errorEl = document.getElementById("cpSearchError");
+    const btn = document.getElementById("cpSearchBtn");
+
+    if (errorEl) { errorEl.textContent = ""; }
+
+    const problem = customerValidateSchedule();
+
+    if (problem) {
+        if (errorEl) { errorEl.textContent = problem; }
         return;
     }
 
-    // A previously selected vehicle may no longer be free for new dates.
-    if (customerState.vehicle) {
+    const s = customerState;
 
-        const fresh = customerVehicles.find(
-            v => v.vehicle_id === customerState.vehicle.vehicle_id
-        );
+    btn.disabled = true;
+    btn.textContent = "Searching…";
 
-        if (!fresh || Number(fresh.is_available) !== 1) {
-            customerState.vehicle = null;
-            const errorEl = document.getElementById("cpError");
-            if (errorEl) {
-                errorEl.textContent =
-                    "Your selected vehicle isn't available for these dates. Please choose another.";
-            }
-        } else {
-            customerState.vehicle = fresh;
+    try {
+
+        customerVehicles = await api("/customer/vehicles/search", {
+            method: "POST",
+            body: JSON.stringify({
+                start_date: s.startDate,
+                end_date: s.endDate,
+                pickup_time: s.pickupTime,
+                dropoff_time: s.dropoffTime,
+                pickup_location: s.pickupLocation,
+                dropoff_location: s.dropoffLocation
+            })
+        });
+
+    } catch (error) {
+
+        if (errorEl) {
+            errorEl.textContent = error.message || "Unable to search vehicles.";
         }
+
+        btn.disabled = false;
+        btn.textContent = "Search Available Vehicles";
+        return;
+    }
+
+    btn.disabled = false;
+    btn.textContent = "Search Available Vehicles";
+
+    customerHasSearched = true;
+    customerState.vehicle = null;
+    customerState.type = "";
+
+    const card = document.getElementById("cpResultsCard");
+
+    if (card) {
+        card.hidden = false;
     }
 
     customerRenderTypeChips();
     customerRenderVehicleCards();
     customerUpdateSummary();
+
+    card?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+
+/* ---------- Vehicle cards ---------- */
 
 function customerRenderTypeChips() {
 
@@ -687,7 +1095,7 @@ function customerRenderVehicleCards() {
         : customerVehicles;
 
     if (!list.length) {
-        grid.innerHTML = `<p class="cp-muted">No vehicles to show right now.</p>`;
+        grid.innerHTML = `<p class="cp-muted">No vehicles to show for these dates.</p>`;
         return;
     }
 
@@ -709,27 +1117,44 @@ function customerRenderVehicleCards() {
             ? `<img src="${escapeHTML(vehicle.image_url)}" alt="${escapeHTML(vehicle.vehicle_name)}" loading="lazy">`
             : `<i class="fa-solid ${customerVehicleIcon(vehicle.type)}" aria-hidden="true"></i>`;
 
+        // Exact price for the searched period (hour-based, from the server).
+        const periodPrice =
+            vehicle.rental_amount !== undefined && vehicle.rental_amount !== null
+                ? `<p class="cp-muted">${escapeHTML(formatHours(vehicle.duration_hours))} · <strong>${customerInr(vehicle.rental_amount)}</strong></p>`
+                : "";
+
         card.innerHTML = `
             <div class="cp-vehicle-media${vehicle.image_url ? "" : " placeholder"}">${media}</div>
             <div class="cp-vehicle-body">
                 <h3>${escapeHTML(vehicle.vehicle_name)}</h3>
                 <p class="cp-muted">${escapeHTML(capitalize(vehicle.type || ""))}</p>
+                ${periodPrice}
                 <div class="cp-vehicle-foot">
                     <div class="cp-price">${customerInr(vehicle.rate_per_day)}<small> / day</small></div>
                     <span class="cp-avail ${available ? "ok" : "no"}">${available ? "Available" : "Booked"}</span>
                 </div>
                 <button type="button" class="cp-select-btn" ${available ? "" : "disabled"}>
-                    ${selected ? "Selected" : available ? "Select vehicle" : "Unavailable"}
+                    ${selected ? "Selected" : available ? "Book this vehicle" : "Unavailable"}
                 </button>
             </div>
         `;
 
         card.querySelector("button")?.addEventListener("click", () => {
+
             customerState.vehicle = vehicle;
+
             const errorEl = document.getElementById("cpError");
+
             if (errorEl) { errorEl.textContent = ""; }
+
             customerRenderVehicleCards();
             customerUpdateSummary();
+
+            // On small screens the summary sits below the cards.
+            if (window.matchMedia("(max-width: 980px)").matches) {
+                document.querySelector(".cp-col-side")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
         });
 
         grid.appendChild(card);
@@ -737,16 +1162,38 @@ function customerRenderVehicleCards() {
 }
 
 
+/* ---------- Price summary + validation ---------- */
+
+function customerStopText(location, date, time) {
+
+    if (!location) { return "—"; }
+
+    const when = date && time ? ` · ${formatDate(date)} ${time}` : "";
+
+    return location + when;
+}
+
+
 function customerUpdateSummary() {
 
     const $ = id => document.getElementById(id);
 
-    const { vehicle, pillion, startDate, endDate, pickupTime, dropoffTime } = customerState;
+    const {
+        vehicle, pillion, startDate, endDate, pickupTime, dropoffTime,
+        pickupLocation, dropoffLocation
+    } = customerState;
 
-    const days = customerRentalDays();
-    const rental = vehicle ? Number(vehicle.rate_per_day) * (days || 0) : 0;
+    const hours = customerRentalHours();
+
+    const rental = vehicle && hours
+        ? customerRentalAmount(vehicle.rate_per_day, hours)
+        : 0;
+
     const pillionAmount = pillion ? PILLION_ADDON_FEE : 0;
-    const total = vehicle && days ? rental + pillionAmount : 0;
+
+    const total = vehicle && hours
+        ? Math.round((rental + pillionAmount) * 100) / 100
+        : 0;
 
     if ($("cpSelected")) {
         $("cpSelected").innerHTML = vehicle
@@ -755,30 +1202,33 @@ function customerUpdateSummary() {
             : "No vehicle selected";
     }
 
-    if ($("cpSumDays")) {
-        $("cpSumDays").textContent = days ? `${days}` : "—";
+    if ($("cpSumHours")) {
+        $("cpSumPickup").textContent = customerStopText(pickupLocation, startDate, pickupTime);
+        $("cpSumDropoff").textContent = customerStopText(dropoffLocation, endDate, dropoffTime);
+        $("cpSumHours").textContent = hours ? formatHours(hours) : "—";
         $("cpSumRental").textContent = customerInr(rental);
         $("cpSumPillion").textContent = customerInr(pillionAmount);
         $("cpSumTotal").textContent = customerInr(total);
     }
 
-    // Progress: each step lights up once its inputs are complete.
+    // Progress: Plan -> Search -> Choose vehicle -> Review price -> Payment.
+    const scheduleDone = Boolean(
+        pickupLocation && dropoffLocation &&
+        startDate && endDate && pickupTime && dropoffTime
+    );
+
     const done = [
+        scheduleDone,
+        customerHasSearched,
         Boolean(vehicle),
-        Boolean(startDate && endDate && pickupTime && dropoffTime),
-        pillion,
-        Boolean(vehicle && days),
+        Boolean(vehicle && hours),
         false
     ];
 
-    let firstOpen = done.findIndex(d => !d);
-
-    // Extras are optional, so never let them block progress.
-    if (firstOpen === 2) { firstOpen = done[3] ? 4 : 3; }
+    const firstOpen = done.findIndex(d => !d);
 
     document.querySelectorAll("#cpSteps li").forEach((li, i) => {
-        const complete = i === 2 ? Boolean(vehicle && startDate && endDate) : done[i];
-        li.classList.toggle("done", complete && i !== 4);
+        li.classList.toggle("done", done[i]);
         li.classList.toggle("active", i === firstOpen);
     });
 }
@@ -786,29 +1236,19 @@ function customerUpdateSummary() {
 
 function customerValidate() {
 
-    const { vehicle, startDate, endDate, pickupTime, dropoffTime } = customerState;
+    const problem = customerValidateSchedule();
 
-    if (!vehicle) { return "Choose a vehicle to continue."; }
+    if (problem) { return problem; }
 
-    if (!startDate || !pickupTime) { return "Select a pickup date and time."; }
+    if (!customerHasSearched) { return "Search for available vehicles first."; }
 
-    if (!endDate || !dropoffTime) { return "Select a drop-off date and time."; }
-
-    if (startDate < today()) { return "Pickup date can't be in the past."; }
-
-    if (endDate < startDate) { return "Drop-off date can't be before pickup date."; }
-
-    if (!customerTimeSlots.includes(pickupTime) || !customerTimeSlots.includes(dropoffTime)) {
-        return "Pickup and drop-off times must be on the half hour.";
-    }
-
-    if (startDate === endDate && dropoffTime <= pickupTime) {
-        return "Drop-off time must be later than pickup time on the same day.";
-    }
+    if (!customerState.vehicle) { return "Choose a vehicle to continue."; }
 
     return "";
 }
 
+
+/* ---------- Confirm booking ---------- */
 
 async function customerConfirmBooking() {
 
@@ -831,6 +1271,8 @@ async function customerConfirmBooking() {
     let booking;
 
     try {
+        // Everything entered in "Plan Your Ride" is reused here;
+        // the customer never types it again.
         booking = await api("/customer/bookings", {
             method: "POST",
             body: JSON.stringify({
@@ -839,6 +1281,8 @@ async function customerConfirmBooking() {
                 end_date: s.endDate,
                 pickup_time: s.pickupTime,
                 dropoff_time: s.dropoffTime,
+                pickup_location: s.pickupLocation,
+                dropoff_location: s.dropoffLocation,
                 pillion_addon: s.pillion
             })
         });
@@ -853,7 +1297,9 @@ async function customerConfirmBooking() {
         pickup_time: s.pickupTime,
         dropoff_time: s.dropoffTime,
         start_date: s.startDate,
-        end_date: s.endDate
+        end_date: s.endDate,
+        pickup_location: s.pickupLocation,
+        dropoff_location: s.dropoffLocation
     };
 
     try {
@@ -888,6 +1334,9 @@ function customerShowPaymentStep(message = "") {
             <p class="cp-muted">${escapeHTML(b.vehicle_name)} · booking #${escapeHTML(b.rental_id)}. This is a demo payment.</p>
 
             <dl class="cp-lines">
+                <div><dt>Pickup</dt><dd>${escapeHTML(b.pickup_location || "—")}</dd></div>
+                <div><dt>Drop-off</dt><dd>${escapeHTML(b.dropoff_location || "—")}</dd></div>
+                <div><dt>Rental duration</dt><dd>${escapeHTML(formatHours(b.duration_hours))}</dd></div>
                 <div><dt>Vehicle rental</dt><dd>${customerInr(b.rental_amount)}</dd></div>
                 <div><dt>Pillion add-on</dt><dd>${customerInr(b.pillion_amount)}</dd></div>
                 <div class="cp-total"><dt>Total</dt><dd>${customerInr(b.total_amount)}</dd></div>
@@ -955,8 +1404,10 @@ function customerShowConfirmation(mode) {
 
             <dl class="cp-lines">
                 <div><dt>Vehicle</dt><dd>${escapeHTML(b.vehicle_name)}</dd></div>
+                <div><dt>Pickup</dt><dd>${escapeHTML(b.pickup_location || "—")}</dd></div>
+                <div><dt>Drop-off</dt><dd>${escapeHTML(b.dropoff_location || "—")}</dd></div>
                 ${when ? `<div><dt>Schedule</dt><dd>${when}</dd></div>` : ""}
-                <div><dt>Rental days</dt><dd>${escapeHTML(b.duration_days ?? "—")}</dd></div>
+                <div><dt>Rental duration</dt><dd>${escapeHTML(formatHours(b.duration_hours))}</dd></div>
                 <div class="cp-total"><dt>Total paid</dt><dd>${customerInr(b.total_amount)}</dd></div>
             </dl>
 
@@ -967,11 +1418,22 @@ function customerShowConfirmation(mode) {
         </section>
     `;
 
-    // Reset the form for the next booking.
+    // Reset the form (including locations and search results) for the
+    // next booking.
     Object.assign(customerState, {
-        vehicle: null, startDate: "", endDate: "",
-        pickupTime: "", dropoffTime: "", pillion: false
+        vehicle: null,
+        type: "",
+        pickupLocation: "",
+        dropoffLocation: "",
+        startDate: "",
+        endDate: "",
+        pickupTime: "",
+        dropoffTime: "",
+        pillion: false
     });
+
+    customerHasSearched = false;
+    customerVehicles = [];
 
     document.getElementById("custBookAnother")
         ?.addEventListener("click", customerShowBookingPage);
@@ -1037,6 +1499,12 @@ async function customerShowMyBookings() {
                     #${escapeHTML(booking.rental_id)} ·
                     ${formatDate(booking.start_date)} ${escapeHTML(customerFormatTime(booking.pickup_time))}
                     to ${formatDate(booking.end_date)} ${escapeHTML(customerFormatTime(booking.dropoff_time))}
+                    · ${escapeHTML(formatHours(booking.duration_hours))}
+                </p>
+                <p class="cp-muted">
+                    ${escapeHTML(booking.pickup_location || "—")}
+                    →
+                    ${escapeHTML(booking.dropoff_location || "—")}
                 </p>
             </div>
             <div class="cp-booking-right">
@@ -1056,7 +1524,7 @@ async function customerShowMyBookings() {
                 customerLastBooking = {
                     rental_id: booking.rental_id,
                     vehicle_name: booking.vehicle_name,
-                    duration_days: null,
+                    duration_hours: booking.duration_hours,
                     rental_amount:
                         Number(booking.total_amount) - Number(booking.pillion_addon || 0),
                     pillion_amount: Number(booking.pillion_addon || 0),
@@ -1064,7 +1532,9 @@ async function customerShowMyBookings() {
                     start_date: booking.start_date,
                     end_date: booking.end_date,
                     pickup_time: booking.pickup_time,
-                    dropoff_time: booking.dropoff_time
+                    dropoff_time: booking.dropoff_time,
+                    pickup_location: booking.pickup_location,
+                    dropoff_location: booking.dropoff_location
                 };
                 customerShowPaymentStep();
             });
@@ -1075,7 +1545,6 @@ async function customerShowMyBookings() {
         list.appendChild(row);
     });
 }
-
 
 
 /* =========================================================
@@ -1275,6 +1744,22 @@ async function loadData() {
     }
 
 
+    try {
+
+        appData.fleetSummary =
+            await api("/fleet/summary");
+
+    } catch (error) {
+
+        console.error(
+            "Fleet summary failed:",
+            error
+        );
+
+        appData.fleetSummary = [];
+    }
+
+
     updateDerivedData();
 
     renderAll();
@@ -1374,12 +1859,16 @@ function normalizeRental(rental) {
             ""
         ).slice(0, 10);
 
-    const actualReturnDate =
+    // actual_return_date is the ONLY indicator that the vehicle was
+    // physically returned. The full date/time is kept for display
+    // and for edit requests.
+    const actualReturnRaw =
         rental.actual_return_date
-            ? String(
-                rental.actual_return_date
-            ).slice(0, 10)
+            ? String(rental.actual_return_date)
             : "";
+
+    const actualReturnDate =
+        actualReturnRaw.slice(0, 10);
 
     return {
 
@@ -1409,6 +1898,30 @@ function normalizeRental(rental) {
 
         actual_return_date:
             actualReturnDate,
+
+        actual_return_datetime:
+            actualReturnRaw,
+
+        // Booked pickup/drop-off times and the hour-based price.
+        pickup_time:
+            rental.pickup_time ?? "",
+
+        dropoff_time:
+            rental.dropoff_time ?? "",
+
+        // Pickup / drop-off locations (empty for older rentals and
+        // rentals created from the admin panel).
+        pickup_location:
+            rental.pickup_location ?? "",
+
+        dropoff_location:
+            rental.dropoff_location ?? "",
+
+        duration_hours:
+            rental.duration_hours ?? null,
+
+        total_amount:
+            rental.total_amount ?? null,
 
         status:
             getRentalStatus(
@@ -1548,6 +2061,9 @@ function normalizePendingPayment(row) {
 
 /* =========================================================
    RENTAL STATUS
+   Only an actual return (actual_return_date) completes a rental.
+   A passed end date only marks it "overdue"; it never releases
+   the vehicle.
 ========================================================= */
 
 function getRentalStatus(
@@ -1591,6 +2107,8 @@ function updateDerivedData() {
         );
 
 
+    // A vehicle stays rented until it is actually returned.
+    // Passing the scheduled end date does NOT release it.
     appData.vehicles =
         appData.vehicles.map(
             vehicle => {
@@ -1601,8 +2119,7 @@ function updateDerivedData() {
                             rental.vehicle_id ===
                             vehicle.id &&
 
-                            rental.status ===
-                            "active"
+                            !rental.actual_return_date
                     );
 
                 return {
@@ -1617,8 +2134,6 @@ function updateDerivedData() {
             }
         );
 }
-
-
 /* =========================================================
    NAVIGATION
 ========================================================= */
@@ -1722,6 +2237,12 @@ function showSection(sectionName) {
         pageTitle.textContent =
             titles[sectionName] ||
             "Dashboard";
+    }
+
+
+    // Re-read the fleet counts every time the Fleet page is opened.
+    if (sectionName === "vehicles") {
+        refreshFleetSummary();
     }
 }
 
@@ -2285,7 +2806,8 @@ async function saveRental(event) {
     }
 
 
-    const otherActiveRental =
+    // A vehicle is occupied until it is actually returned.
+    const otherUnreturnedRental =
         appData.rentals.find(
             rental =>
 
@@ -2295,22 +2817,27 @@ async function saveRental(event) {
                 rental.vehicle_id ===
                 String(vehicleId) &&
 
-                rental.status ===
-                "active"
+                !rental.actual_return_date
+        );
+
+
+    // A rental that was already returned no longer occupies its
+    // vehicle, so it can still be edited.
+    const editedRental =
+        appData.rentals.find(
+            rental =>
+                rental.id ===
+                String(editingId)
         );
 
 
     if (
-        otherActiveRental &&
-        (
-            !editingId ||
-            otherActiveRental.id !==
-            String(editingId)
-        )
+        otherUnreturnedRental &&
+        !editedRental?.actual_return_date
     ) {
 
         showToast(
-            "That vehicle is already rented.",
+            "That vehicle is already rented and has not been returned yet.",
             "error"
         );
 
@@ -2343,9 +2870,12 @@ async function saveRental(event) {
                     String(editingId)
             );
 
+        // Send the original date/time back unchanged so editing a
+        // rental never wipes or alters the recorded return time.
         data.actual_return_date =
-            existingRental?.actual_return_date ||
-            null;
+            existingRental?.actual_return_datetime
+                ? existingRental.actual_return_datetime.replace("T", " ")
+                : null;
     }
 
 
@@ -2633,6 +3163,7 @@ function fillRentalDropdowns() {
         appData.vehicles.forEach(
             vehicle => {
 
+                // Unavailable until actually returned.
                 const rented =
                     appData.rentals.some(
                         rental =>
@@ -2640,8 +3171,7 @@ function fillRentalDropdowns() {
                             rental.vehicle_id ===
                             vehicle.id &&
 
-                            rental.status ===
-                            "active" &&
+                            !rental.actual_return_date &&
 
                             rental.id !==
                             String(editingId)
@@ -2883,6 +3413,8 @@ function renderAll() {
 
     renderVehicles();
 
+    renderFleetSummary();
+
     renderRentals();
 
     renderPayments();
@@ -3097,8 +3629,8 @@ function renderDashboardRentals() {
                         </td>
 
                         <td>
-                            ${badge(
-                                rental.status
+                            ${rentalStatusBadge(
+                                rental
                             )}
                         </td>
 
@@ -3446,7 +3978,125 @@ function renderVehicles() {
 
 
 /* =========================================================
+   FLEET AVAILABILITY SUMMARY (by vehicle type)
+   Numbers come from GET /fleet/summary. loadData() already runs
+   after add/delete vehicle, create rental and Return Vehicle,
+   so the cards update after each of those actions.
+========================================================= */
+
+function fleetTypeLabel(type) {
+
+    const text = String(type || "");
+
+    return text.toLowerCase() === "suv"
+        ? "SUV"
+        : capitalize(text);
+}
+
+
+async function refreshFleetSummary() {
+
+    try {
+
+        appData.fleetSummary =
+            await api("/fleet/summary");
+
+    } catch (error) {
+
+        console.error(
+            "Fleet summary failed:",
+            error
+        );
+    }
+
+    renderFleetSummary();
+}
+
+
+function renderFleetSummary() {
+
+    const container =
+        document.getElementById(
+            "fleetSummary"
+        );
+
+    if (!container) {
+        return;
+    }
+
+    const rows =
+        appData.fleetSummary || [];
+
+    if (!rows.length) {
+
+        container.innerHTML = `
+            <div class="fleet-sum-empty">
+                No fleet data yet
+            </div>
+        `;
+
+        return;
+    }
+
+    container.innerHTML =
+        rows
+            .map(
+                row => `
+
+                    <article class="fleet-sum-card">
+
+                        <div class="fleet-sum-head">
+
+                            <span class="fleet-sum-icon">
+                                <i class="fa-solid ${customerVehicleIcon(row.type)}"></i>
+                            </span>
+
+                            <strong>
+                                ${escapeHTML(
+                                    fleetTypeLabel(row.type)
+                                )}
+                            </strong>
+
+                        </div>
+
+                        <dl class="fleet-sum-lines">
+
+                            <div>
+                                <dt>Total</dt>
+                                <dd>${Number(row.total)}</dd>
+                            </div>
+
+                            <div>
+                                <dt>Available</dt>
+                                <dd class="fleet-sum-ok">
+                                    ${Number(row.available)}
+                                </dd>
+                            </div>
+
+                            <div>
+                                <dt>Out on Rental</dt>
+                                <dd class="${Number(row.out_on_rental) > 0 ? "fleet-sum-out" : ""}">
+                                    ${Number(row.out_on_rental)}
+                                </dd>
+                            </div>
+
+                        </dl>
+
+                    </article>
+
+                `
+            )
+            .join("");
+}
+
+
+/* =========================================================
    RENTALS TABLE
+   Columns: ID, Customer, Vehicle, Pickup (location + date/time),
+   Drop-off (location + date/time), Actual Return, Duration,
+   Amount, Status, Actions.
+   The Return Vehicle button only appears while
+   actual_return_date is empty.
 ========================================================= */
 
 function renderRentals() {
@@ -3500,7 +4150,7 @@ function renderRentals() {
 
 
                 const searchableText =
-                    `${rental.id} ${customer?.full_name || ""} ${vehicle?.model || ""} ${vehicle?.type || ""} ${rental.customer_id} ${rental.vehicle_id}`
+                    `${rental.id} ${customer?.full_name || ""} ${vehicle?.model || ""} ${vehicle?.type || ""} ${rental.customer_id} ${rental.vehicle_id} ${rental.pickup_location || ""} ${rental.dropoff_location || ""}`
                         .toLowerCase();
 
 
@@ -3529,7 +4179,7 @@ function renderRentals() {
 
         emptyTable(
             tbody,
-            8,
+            10,
             "No rentals found"
         );
 
@@ -3571,32 +4221,89 @@ function renderRentals() {
                         </td>
 
                         <td>
+                            <strong>${escapeHTML(
+                                rental.pickup_location ||
+                                "—"
+                            )}</strong><br>
                             ${formatDate(
                                 rental.rental_date
                             )}
+                            ${escapeHTML(
+                                customerFormatTime(
+                                    rental.pickup_time
+                                )
+                            )}
                         </td>
 
                         <td>
+                            <strong>${escapeHTML(
+                                rental.dropoff_location ||
+                                "—"
+                            )}</strong><br>
                             ${formatDate(
                                 rental.expected_return_date
                             )}
-                        </td>
-
-                        <td>
-                            ${formatDate(
-                                rental.actual_return_date
+                            ${escapeHTML(
+                                customerFormatTime(
+                                    rental.dropoff_time
+                                )
                             )}
                         </td>
 
                         <td>
-                            ${badge(
-                                rental.status
+                            ${
+                                rental.actual_return_datetime
+                                    ? escapeHTML(
+                                        formatDateTime(
+                                            rental.actual_return_datetime
+                                        )
+                                    )
+                                    : `<span class="not-returned">Not returned</span>`
+                            }
+                        </td>
+
+                        <td>
+                            ${escapeHTML(
+                                formatHours(
+                                    rental.duration_hours
+                                )
                             )}
+                        </td>
+
+                        <td>
+                            ${
+                                rental.total_amount !== null &&
+                                rental.total_amount !== ""
+                                    ? customerInr(
+                                        rental.total_amount
+                                    )
+                                    : "—"
+                            }
+                        </td>
+
+                        <td>
+                            ${rentalStatusBadge(rental)}
                         </td>
 
                         <td>
 
                             <div class="action-buttons">
+
+                                ${
+                                    rental.actual_return_date
+                                        ? ""
+                                        : `
+                                <button
+                                    class="return-button"
+                                    onclick="returnRental('${safeAttr(rental.id)}')"
+                                    title="Mark as Returned">
+
+                                    <i class="fa-solid fa-rotate-left"></i>
+                                    Return Vehicle
+
+                                </button>
+                                `
+                                }
 
                                 <button
                                     class="action-button"
@@ -4230,6 +4937,99 @@ async function deletePayment(id) {
 
 
 /* =========================================================
+   RETURN VEHICLE (actual return + restocking)
+   The scheduled end date never releases a vehicle. Only this
+   admin action does, through POST /rentals/{id}/return.
+========================================================= */
+
+const returningRentalIds = new Set();
+
+async function returnRental(id) {
+
+    const rentalId = String(id);
+
+    const rental =
+        appData.rentals.find(
+            item => item.id === rentalId
+        );
+
+    if (!rental) {
+
+        showToast(
+            "Rental not found.",
+            "error"
+        );
+
+        return;
+    }
+
+    if (rental.actual_return_date) {
+
+        showToast(
+            "This vehicle has already been returned.",
+            "error"
+        );
+
+        return;
+    }
+
+    // Ignore double clicks while a return is in progress.
+    if (returningRentalIds.has(rentalId)) {
+        return;
+    }
+
+    if (
+        !confirm(
+            `Mark rental #${rentalId} as returned? ` +
+            `The vehicle will become available again.`
+        )
+    ) {
+        return;
+    }
+
+    returningRentalIds.add(rentalId);
+
+    try {
+
+        await api(
+            `/rentals/${encodeURIComponent(rentalId)}/return`,
+            {
+                method: "POST"
+            }
+        );
+
+        // Refreshes rentals, vehicle availability AND the fleet summary.
+        await loadData();
+
+        showToast(
+            "Vehicle returned successfully.",
+            "success"
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Vehicle return failed:",
+            error
+        );
+
+        showToast(
+            error.message ||
+            "Unable to return vehicle.",
+            "error"
+        );
+
+        // Another admin may have returned it already; resync.
+        await loadData();
+
+    } finally {
+
+        returningRentalIds.delete(rentalId);
+    }
+}
+
+
+/* =========================================================
    DASHBOARD
 ========================================================= */
 
@@ -4582,6 +5382,44 @@ function formatDate(date) {
 }
 
 
+// Shows date AND time, e.g. "03 Oct 2026, 02:30 pm".
+// Used for actual_return_date, which the backend stores with a time.
+function formatDateTime(value) {
+
+    if (!value) {
+        return "—";
+    }
+
+    const match =
+        String(value).match(
+            /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/
+        );
+
+    if (!match) {
+        return formatDate(value);
+    }
+
+    const [, year, month, day, hour, minute] = match;
+
+    return new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour),
+        Number(minute)
+    ).toLocaleString(
+        "en-IN",
+        {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit"
+        }
+    );
+}
+
+
 function capitalize(text) {
 
     const value =
@@ -4695,6 +5533,25 @@ function badge(status) {
         </span>
 
     `;
+}
+
+
+// Completed = the vehicle was actually returned (actual_return_date set).
+function rentalStatusBadge(rental) {
+
+    if (rental.actual_return_date) {
+
+        return `
+            <span class="badge badge-success"
+                  title="Vehicle returned">
+                <i class="fa-solid fa-circle-check"
+                   style="margin-right:5px;"></i>
+                Completed
+            </span>
+        `;
+    }
+
+    return badge(rental.status);
 }
 
 
@@ -4919,6 +5776,9 @@ window.editRental =
 
 window.deleteRental =
     deleteRental;
+
+window.returnRental =
+    returnRental;
 
 window.editPayment =
     editPayment;

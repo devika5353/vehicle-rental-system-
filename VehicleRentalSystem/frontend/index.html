@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 
@@ -30,14 +29,24 @@
 
 <body>
 
-    <!-- =========================================================
-         LOGIN OVERLAY (admin-only)
+
+       <!-- =========================================================
+         LOGIN / REGISTER OVERLAY
+         Customer tab: sign in + "Create an account".
+         Admin tab: sign in only (admins cannot register).
          ========================================================= -->
 
     <div id="loginOverlay" style="position:fixed;inset:0;background:#0f172a;display:flex;align-items:center;justify-content:center;z-index:99999;">
+
         <form id="loginForm" style="background:#1e293b;padding:32px;border-radius:12px;width:320px;box-shadow:0 10px 30px rgba(0,0,0,0.4);">
             <h2 style="color:#f8fafc;margin-bottom:4px;">DrivePrime</h2>
-            <p style="color:#94a3b8;margin-bottom:20px;font-size:0.85rem;">Admin sign in</p>
+
+            <div class="auth-tabs" role="tablist" aria-label="Sign in as">
+                <button type="button" id="tabCustomer" class="auth-tab active" role="tab" aria-selected="true">Customer</button>
+                <button type="button" id="tabAdmin" class="auth-tab" role="tab" aria-selected="false">Admin</button>
+            </div>
+
+            <p id="loginSubtitle" style="color:#94a3b8;margin-bottom:20px;font-size:0.85rem;">Customer sign in</p>
 
             <input
                 id="loginEmail"
@@ -60,9 +69,36 @@
             <button type="submit" class="btn btn-primary" style="width:100%;">Login</button>
 
             <p id="loginError" style="color:#f87171;margin-top:10px;font-size:0.85rem;"></p>
-        </form>
-    </div>
+            <p id="loginNotice" class="auth-notice"></p>
 
+            <p id="registerPrompt" class="auth-switch">
+                New to DrivePrime?
+                <button type="button" id="showRegisterBtn" class="auth-link">Create an account</button>
+            </p>
+        </form>
+
+
+        <form id="registerForm" class="auth-card" style="display:none;">
+            <h2>Create account</h2>
+            <p class="auth-sub">Customer registration</p>
+
+            <input id="registerName" class="auth-input" type="text" placeholder="Full name" required maxlength="100" autocomplete="name">
+            <input id="registerEmail" class="auth-input" type="email" placeholder="Email" required maxlength="100" autocomplete="email">
+            <input id="registerPhone" class="auth-input" type="tel" placeholder="Phone (e.g. 9876543210)" required maxlength="15" autocomplete="tel">
+            <input id="registerPassword" class="auth-input" type="password" placeholder="Password (min 6 characters)" required minlength="6" autocomplete="new-password">
+            <input id="registerConfirm" class="auth-input" type="password" placeholder="Confirm password" required minlength="6" autocomplete="new-password">
+
+            <button id="registerSubmitBtn" type="submit" class="btn btn-primary" style="width:100%;">Create account</button>
+
+            <p id="registerError" class="auth-error" role="alert"></p>
+
+            <p class="auth-switch">
+                Already have an account?
+                <button type="button" id="showLoginBtn" class="auth-link">Sign in</button>
+            </p>
+        </form>
+
+    </div>
 
     <!-- =========================================================
          APPLICATION WRAPPER
@@ -582,6 +618,7 @@
                         </button>
 
                     </div>
+                    <div class="fleet-summary" id="fleetSummary"></div>
 
 
                     <div class="toolbar">
@@ -717,9 +754,11 @@
                                         <th>ID</th>
                                         <th>Customer</th>
                                         <th>Vehicle</th>
-                                        <th>Rental Date</th>
-                                        <th>Return Date</th>
-                                        <th>Total</th>
+                                        <th>Pickup</th>
+                                        <th>Drop-off</th>
+                                        <th>Actual Return</th>
+                                        <th>Duration</th>
+                                        <th>Amount</th>
                                         <th>Status</th>
                                         <th>Actions</th>
                                     </tr>
